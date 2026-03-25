@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HabitFlow Pro</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              teal: { DEFAULT: '#2a7d7b', light: '#3a9593' },
+              salmon: { DEFAULT: '#e8a09a', dark: '#d58c86' },
+              accentRed: '#c0392b',
+              lightBg: '#f8f9fa'
+            }
+          }
+        }
+      }
+    </script>
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.12.0/umd/Recharts.js"></script>
+
+    <style>
+      body { background-color: #f8f9fa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      th, td { border: 1px solid #e5e7eb; }
+      th { font-weight: 600; color: #374151; }
+    </style>
+</head>
+<body>
+    <div id="error-log" style="color: red; padding: 20px; font-weight: bold; font-family: monospace; white-space: pre-wrap;"></div>
+    <script>
+      window.addEventListener('error', e => document.getElementById('error-log').innerText += '\n[JS Error]: ' + e.message);
+      window.addEventListener('unhandledrejection', e => document.getElementById('error-log').innerText += '\n[Promise]: ' + e.reason);
+    </script>
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useMemo, useCallback } = React;
+      const { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } = window.Recharts || {};
+
+      // --- Icons ---
+      const CheckIcon = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>;
+      const TrashIcon = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>;
+      const PlusIcon = () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>;
+      const ChevronLeftIcon = () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>;
+      const ChevronRightIcon = () => <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>;
+
+      // --- Default Data ---
+      const defaultHabitNames = ["Wake Up (4AM)","Shilajit","500ml Water","CAT 2 Prep","Bath","3 Egg Morning","Proper Lunch Meal","Pre Workout","Gym","Post Workout Shake","Assignments/Pendings","MBA Prep","PCB Design","Read Book/Newspaper","Protein Dinner","Sleep 6Hrs"];
+      const INITIAL_HABITS = defaultHabitNames.map((name, i) => ({ id: `h_${Date.now()}_${i}`, name, goal: 10 }));
+
+      // --- Date Utils ---
+      const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+      const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+      function getDaysInMonth(year, month) { return new Date(year, month + 1, 0).getDate(); }
+      function getDayOfWeek(year, month, day) { return dayNames[new Date(year, month, day).getDay()]; }
+      function getWeekGroupings(year, month) {
+        const days = getDaysInMonth(year, month);
+        const weeks = [];
+        let currentWeek = [];
+        for (let day = 1; day <= days; day++) {
+          currentWeek.push(day);
+          if (currentWeek.length === 7 || day === days) {
+            weeks.push({ label: `Wk ${weeks.length + 1}`, days: [...currentWeek] });
+            currentWeek = [];
+          }
+        }
+        return weeks;
+      }
+      function getProgressBarColor(percent) {
+        if (percent < 33) return '#c0392b'; 
+        if (percent < 66) return '#e8a09a'; 
+        return '#2a7d7b'; 
+      }
+
+      // --- Gamification Store & Logic ---
+      function useAppStore() {
+        const [currentMonth, setCurrentMonth] = useState(() => {
+          const now = new Date();
+          return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        });
+
+        const [globalHabits, setGlobalHabits] = useState(() => {
+          return JSON.parse(localStorage.getItem('habitTrackerGlobal_v1')) || INITIAL_HABITS;
+        });
+
+        const [monthlyData, setMonthlyData] = useState({});
+        const [teamMembers, setTeamMembers] = useState(() => JSON.parse(localStorage.getItem('teamMembers_v1')) || []);
+        const [teamMonthlyData, setTeamMonthlyData] = useState({});
+        
+        const [xpData, setXpData] = useState(() => {
+          return JSON.parse(localStorage.getItem('xpData_v1')) || { 'myself': { xp: 0, badges: [], totalCompletions: 0 } };
+        });
+
+        useEffect(() => {
+          const myData = localStorage.getItem(`habitData_${currentMonth}`);
+          setMonthlyData(myData ? JSON.parse(myData) : {});
+          const tData = localStorage.getItem(`teamData_${currentMonth}`);
+          setTeamMonthlyData(tData ? JSON.parse(tData) : {});
+        }, [currentMonth]);
+
+        useEffect(() => { localStorage.setItem('habitTrackerGlobal_v1', JSON.stringify(globalHabits)); }, [globalHabits]);
+        useEffect(() => { localStorage.setItem(`habitData_${currentMonth}`, JSON.stringify(monthlyData)); }, [monthlyData, currentMonth]);
+        useEffect(() => { localStorage.setItem(`teamData_${currentMonth}`, JSON.stringify(teamMonthlyData)); }, [teamMonthlyData, currentMonth]);
+        useEffect(() => { localStorage.setItem('teamMembers_v1', JSON.stringify(teamMembers)); }, [teamMembers]);
+        useEffect(() => { localStorage.setItem('xpData_v1', JSON.stringify(xpData)); }, [xpData]);
+
+        const calcGamification = useCallback((userId, habitId, dayNum, isChecked, wasChecked, monthStateLocal) => {
+          setXpData(prevXp => {
+            const userXp = prevXp[userId] || { xp: 0, badges: [], totalCompletions: 0 };
+            let newXp = userXp.xp + (isChecked ? 10 : -10);
+            let newTotal = userXp.totalCompletions + (isChecked ? 1 : -1);
+            let newBadges = [...(userXp.badges || [])];
+            
+            const allCount = globalHabits.length;
+            if (allCount > 0) {
+              let cNow = 0;
+              globalHabits.forEach(h => { if (monthStateLocal[h.id]?.[dayNum]) cNow++; });
+              let perfNow = (cNow === allCount);
+              let perfBefore = isChecked ? (cNow - 1 === allCount) : (cNow + 1 === allCount);
+              
+              if (!perfBefore && perfNow) newXp += 50;
+              if (perfBefore && !perfNow) newXp -= 50;
+
+              for(let ed = dayNum; ed <= dayNum + 6; ed++) {
+                let sNow = true, sBefore = true;
+                for(let i=0; i<7; i++) {
+                  let d = ed - i;
+                  if (d <= 0 || d > 31) { sNow=false; sBefore=false; break; }
+                  let vNow = monthStateLocal[habitId]?.[d] || false;
+                  let vBefore = (d === dayNum) ? wasChecked : vNow;
+                  if(!vNow) sNow = false;
+                  if(!vBefore) sBefore = false;
+                }
+                if (!sBefore && sNow) newXp += 100;
+                if (sBefore && !sNow) newXp -= 100;
+              }
+
+              if (newTotal >= 100 && !newBadges.includes('Century Club')) newBadges.push('Century Club');
+              const theH = globalHabits.find(h => h.id === habitId);
+              if (theH && (theH.name.includes("4AM") || theH.name.includes("Wake Up")) && !newBadges.includes('Early Bird')) {
+                let eS = 0;
+                for(let d = dayNum; d > dayNum - 7; d--) if (d > 0 && monthStateLocal[habitId]?.[d]) eS++;
+                if (eS === 7) newBadges.push('Early Bird');
+              }
+              if (perfNow && !newBadges.includes('Iron Discipline')) {
+                let pDays = 0;
+                for(let d = dayNum; d > dayNum - 3; d--) {
+                  if (d > 0) {
+                    let c = 0;
+                    globalHabits.forEach(h => { if(monthStateLocal[h.id]?.[d]) c++; });
+                    if (c === allCount) pDays++;
+                  }
+                }
+                if (pDays === 3) newBadges.push('Iron Discipline');
+              }
+            }
+            return { ...prevXp, [userId]: { xp: Math.max(0, newXp), badges: newBadges, totalCompletions: newTotal } };
+          });
+        }, [globalHabits]);
+
+        const toggleDay = (habitId, dayNum) => {
+          setMonthlyData(prev => {
+            const hD = prev[habitId] || {};
+            const isChecked = !(hD[dayNum] || false);
+            const newState = { ...prev, [habitId]: { ...hD, [dayNum]: isChecked } };
+            calcGamification('myself', habitId, dayNum, isChecked, !isChecked, newState);
+            return newState;
+          });
+        };
+
+        const toggleTeamDay = (memberId, habitId, dayNum) => {
+          setTeamMonthlyData(prev => {
+            const mData = prev[memberId] || {};
+            const hD = mData[habitId] || {};
+            const isChecked = !(hD[dayNum] || false);
+            const newMemberState = { ...mData, [habitId]: { ...hD, [dayNum]: isChecked } };
+            const newState = { ...prev, [memberId]: newMemberState };
+            calcGamification(memberId, habitId, dayNum, isChecked, !isChecked, newMemberState);
+            return newState;
+          });
+        };
+
+        const updateHabitName = (id, newName) => setGlobalHabits(p => p.map(h => h.id === id ? { ...h, name: newName } : h));
+        const updateHabitGoal = (id, newGoal) => setGlobalHabits(p => p.map(h => h.id === id ? { ...h, goal: parseInt(newGoal) || 0 } : h));
+        const addHabit = () => setGlobalHabits(p => [...p, { id: `h_${Date.now()}`, name: "New Habit", goal: 10 }]);
+        const deleteHabit = (id) => setGlobalHabits(p => p.filter(h => h.id !== id));
+        
+        const addTeamMember = (name) => setTeamMembers(p => [...p, { id: `m_${Date.now()}`, name }]);
+        const removeTeamMember = (id) => setTeamMembers(p => p.filter(m => m.id !== id));
+
+        return { currentMonth, setCurrentMonth, globalHabits, monthlyData, toggleDay, 
+                 updateHabitName, updateHabitGoal, addHabit, deleteHabit, 
+                 teamMembers, teamMonthlyData, toggleTeamDay, addTeamMember, removeTeamMember, xpData };
+      }
+
+      // --- Components ---
+
+      function LevelDisplay({ xpData, name }) {
+        const xp = xpData?.xp || 0;
+        const badges = xpData?.badges || [];
+        const lvl = xp < 500 ? 1 : xp < 1500 ? 2 : xp < 3000 ? 3 : xp < 5000 ? 4 : 5;
+        const nXp = lvl===1?500:lvl===2?1500:lvl===3?3000:lvl===4?5000:null;
+        const pXp = lvl===1?0:lvl===2?500:lvl===3?1500:lvl===4?3000:5000;
+        const prog = nXp ? ((xp - pXp) / (nXp - pXp)) * 100 : 100;
+        const badgeIcon = b => b==='Early Bird'?'🌅':b==='Iron Discipline'?'⚔️':b==='Century Club'?'💯':'🏅';
+
+        return (
+          <div className="flex flex-col md:flex-row items-center gap-3 bg-white px-4 py-2 rounded-xl shadow-sm border border-gray-200">
+            {name && <div className="font-semibold text-gray-700">{name}</div>}
+            <div className="font-black text-teal text-xl">Lvl {lvl}</div>
+            <div className="flex flex-col w-32">
+              <div className="flex justify-between text-xs font-bold text-gray-600"><span>{xp} XP</span>{nXp && <span className="text-gray-400">{nXp} XP</span>}</div>
+              <div className="w-full h-2 bg-gray-200 rounded-full mt-1 overflow-hidden"><div className="h-full bg-teal transition-all" style={{width:`${prog}%`}}></div></div>
+            </div>
+            {badges.length > 0 && <div className="flex gap-1 border-l pl-3 ml-1">{badges.map(b => <span key={b} title={b} className="text-lg cursor-help">{badgeIcon(b)}</span>)}</div>}
+          </div>
+        );
+      }
+
+      function DailyTracker({ currentMonth, globalHabits, data, toggleDay, updateHabitName, updateHabitGoal, addHabit, deleteHabit, hideControls }) {
+        const [yearStr, monthStr] = currentMonth.split('-');
+        const y = parseInt(yearStr); const m = parseInt(monthStr) - 1;
+        const WEEKS = useMemo(() => getWeekGroupings(y, m), [y, m]);
+
+        const totalCompleted = useMemo(() => {
+          return globalHabits.reduce((acc, h) => acc + Object.values(data[h.id]||{}).filter(Boolean).length, 0);
+        }, [data, globalHabits]);
+        const totalGoals = globalHabits.reduce((acc, h) => acc + h.goal, 0);
+        const overallProgress = totalGoals > 0 ? ((totalCompleted / totalGoals) * 100).toFixed(1) : 0;
+
+        return (
+          <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden flex flex-col mt-4">
+            <div className="p-4 bg-teal text-white flex justify-between items-center rounded-t-xl">
+              <h2 className="text-xl font-bold">{hideControls ? "Member Tracker" : "Daily Habit Tracker"}</h2>
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <div className="text-sm opacity-80 uppercase tracking-wider">Overall Progress</div>
+                  <div className="text-2xl font-bold">{overallProgress}%</div>
+                </div>
+                <div className="w-32 h-4 bg-black/20 rounded-full overflow-hidden border border-white/20">
+                  <div className="h-full bg-accentRed transition-all" style={{ width: `${Math.min(100, overallProgress)}%` }}></div>
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-center border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 text-xs uppercase tracking-wider text-gray-500">
+                    <th className="p-3 text-left w-56 sticky left-0 z-10 bg-gray-50 border-r-2 border-gray-200">Habits</th>
+                    {WEEKS.map((w, i) => <th key={w.label} colSpan={w.days.length} className={`p-2 border-r-2 border-gray-300 ${i % 2 === 0 ? 'bg-teal/5' : 'bg-gray-100'}`}>{w.label}</th>)}
+                    <th className="p-2 border-l-2 border-gray-300 bg-gray-50 w-16">Goal</th>
+                    <th className="p-2 w-16 text-teal">Com</th>
+                    <th className="p-2 w-16 text-salmon-dark">Left</th>
+                    <th className="p-2 w-32">Progress</th>
+                    {!hideControls && <th className="p-2 w-10"></th>}
+                  </tr>
+                  <tr className="bg-white text-xs font-semibold border-b-2 border-gray-200">
+                    <th className="p-2 sticky left-0 z-10 bg-white border-r-2 border-gray-200"></th>
+                    {WEEKS.map((w, i) => w.days.map((day, di) => (
+                      <th key={day} className={`p-1 min-w-[28px] border-b ${di === w.days.length - 1 ? 'border-r-2 border-gray-300' : 'border-r border-gray-100'} ${i % 2 === 0 ? 'bg-teal/5' : 'bg-gray-50'}`}>
+                        <div className="flex flex-col"><span className="text-[9px] text-gray-400 font-normal uppercase">{getDayOfWeek(y, m, day)}</span><span>{day}</span></div>
+                      </th>
+                    )))}
+                    <td colSpan={hideControls ? 4 : 5} className="bg-gray-50"></td>
+                  </tr>
+                </thead>
+                <tbody>
+                  {globalHabits.map((habit) => {
+                    const com = Object.values(data[habit.id]||{}).filter(Boolean).length;
+                    const left = Math.max(0, habit.goal - com);
+                    const prog = habit.goal > 0 ? Math.min(100, (com / habit.goal) * 100) : 0;
+                    return (
+                      <tr key={habit.id} className="hover:bg-gray-50/50 group">
+                        <td className="p-2 text-left sticky left-0 z-10 bg-white border-r-2 border-gray-200 group-hover:bg-gray-50">
+                          {hideControls ? <div className="px-1 font-medium text-gray-700 truncate w-48">{habit.name}</div> :
+                            <input type="text" value={habit.name} onChange={(e) => updateHabitName(habit.id, e.target.value)} className="w-full bg-transparent border-none outline-none focus:ring-1 focus:ring-teal rounded px-1 font-medium text-gray-700" />
+                          }
+                        </td>
+                        {WEEKS.map((w, wi) => w.days.map((day, di) => {
+                          const isChecked = data[habit.id]?.[day];
+                          return (
+                            <td key={day} onClick={() => toggleDay(habit.id, day)} className={`p-0 aspect-square cursor-pointer transition-colors border-r ${di === w.days.length - 1 ? 'border-r-2 border-gray-300' : 'border-gray-100'} ${wi % 2 === 0 ? 'bg-teal/5' : ''} hover:bg-gray-200`}>
+                              <div className={`w-full h-8 flex items-center justify-center m-auto ${isChecked ? 'bg-teal text-white' : 'transparent text-transparent'}`}>{isChecked && <CheckIcon />}</div>
+                            </td>
+                          )
+                        }))}
+                        <td className="p-1 border-l-2 border-gray-300 font-semibold bg-gray-50">
+                          {hideControls ? <div className="text-center font-bold text-gray-800">{habit.goal}</div> :
+                            <input type="number" value={habit.goal} onChange={(e) => updateHabitGoal(habit.id, e.target.value)} className="w-full text-center bg-transparent border-none outline-none focus:ring-1 focus:ring-teal rounded p-1 font-bold text-gray-800" min="1" max="31" />
+                          }
+                        </td>
+                        <td className="p-2 font-bold text-teal">{com}</td>
+                        <td className="p-2 font-bold text-salmon-dark">{left}</td>
+                        <td className="p-2 border-l border-gray-200 relative">
+                          <div className="flex items-center gap-2 w-full">
+                            <span className="text-xs font-semibold w-9 text-right">{prog.toFixed(0)}%</span>
+                            <div className="flex-1 h-3 bg-gray-200 rounded-full overflow-hidden shadow-inner"><div className="h-full transition-all" style={{ width: `${Math.min(100, prog)}%`, backgroundColor: getProgressBarColor(prog) }}></div></div>
+                          </div>
+                        </td>
+                        {!hideControls && (
+                          <td className="p-2 text-center">
+                            <button onClick={() => deleteHabit(habit.id)} className="text-gray-400 hover:text-accentRed"><TrashIcon /></button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {!hideControls && (
+              <div className="p-4 bg-gray-50 border-t border-gray-200 flex justify-between">
+                <button onClick={addHabit} className="flex items-center gap-2 px-4 py-2 bg-teal text-white rounded shadow hover:bg-teal-light font-medium text-sm"><PlusIcon /> Add New Habit</button>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function TeamDashboard({ currentMonth, globalHabits, teamMembers, allTeamData, toggleTeamDay, addTeamMember, removeTeamMember, xpData }) {
+        const [newMember, setNewMember] = useState("");
+        const [expandedId, setExpandedId] = useState(null);
+
+        const [yStr, mStr] = currentMonth.split('-');
+        const days = getDaysInMonth(parseInt(yStr), parseInt(mStr) - 1);
+
+        const stats = useMemo(() => {
+          return teamMembers.map(member => {
+            let com = 0; let tData = allTeamData[member.id] || {};
+            const tGoals = globalHabits.reduce((acc, h) => acc + h.goal, 0);
+            globalHabits.forEach(h => { if (tData[h.id]) com += Object.values(tData[h.id]).filter(Boolean).length; });
+            const per = tGoals > 0 ? (com / tGoals) * 100 : 0;
+            return { ...member, com, per };
+          }).sort((a,b) => b.per - a.per);
+        }, [teamMembers, allTeamData, globalHabits]);
+
+        const teamStreak = useMemo(() => {
+          if (teamMembers.length === 0) return { current: 0, best: 0 };
+          let cSt = 0; let mSt = 0;
+          for (let d = 1; d <= days; d++) {
+            let allDid = true;
+            for (let member of teamMembers) {
+               let memDid = false; let mdata = allTeamData[member.id] || {};
+               for (let h of globalHabits) { if (mdata[h.id]?.[d]) { memDid = true; break; } }
+               if (!memDid) { allDid = false; break; }
+            }
+            if (allDid) { cSt++; mSt = Math.max(mSt, cSt); } else { cSt = 0; }
+          }
+          let savedB = parseInt(localStorage.getItem('bestTeamStreak_v1') || '0');
+          if (mSt > savedB) { localStorage.setItem('bestTeamStreak_v1', mSt.toString()); savedB = mSt; }
+          return { current: cSt, best: savedB };
+        }, [teamMembers, allTeamData, globalHabits, days]);
+
+        return (
+          <div className="space-y-6 mt-4 animate-in fade-in">
+            <div className="bg-white p-6 rounded-xl shadow border border-gray-200 flex flex-col md:flex-row justify-between gap-6">
+               <div className="flex-1">
+                 <h3 className="text-xl font-bold border-b pb-2 mb-4">Team Leaderboard</h3>
+                 {stats.length === 0 && <p className="text-gray-500">No members yet. Add some to start!</p>}
+                 <div className="space-y-2">
+                   {stats.map((m, i) => (
+                      <div key={m.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
+                        <div className="flex items-center gap-3">
+                          <span className="text-xl">{i===0?'🥇':i===1?'🥈':i===2?'🥉':<span className="text-gray-400 font-bold ml-1">{i+1}.</span>}</span>
+                          <span className="font-bold text-gray-700">{m.name}</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                           <div className="text-right w-24">
+                              <div className="text-xs text-gray-500 uppercase">Completed</div>
+                              <div className="font-bold text-teal">{m.per.toFixed(1)}%</div>
+                           </div>
+                           <button onClick={() => setExpandedId(expandedId === m.id ? null : m.id)} className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm font-semibold transition">
+                             {expandedId === m.id ? 'Hide' : 'View'}
+                           </button>
+                           <button onClick={() => removeTeamMember(m.id)} className="text-gray-400 hover:text-accentRed"><TrashIcon /></button>
+                        </div>
+                      </div>
+                   ))}
+                 </div>
+               </div>
+               
+               <div className="w-full md:w-80 flex flex-col gap-4">
+                 <div className="bg-gradient-to-br from-teal to-teal-light text-white p-4 rounded-xl shadow-lg flex items-center gap-4">
+                    <div className="text-4xl">🔥</div>
+                    <div>
+                       <div className="text-sm font-bold opacity-80 uppercase tracking-widest">Team Streak</div>
+                       <div className="text-2xl font-black">{teamStreak.current} Days</div>
+                       <div className="text-xs opacity-75 mt-1">Best Ever: {teamStreak.best} Days</div>
+                    </div>
+                 </div>
+                 
+                 <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 mt-auto">
+                   <h4 className="font-bold text-sm text-gray-600 uppercase mb-2">Add Member</h4>
+                   <div className="flex gap-2">
+                     <input value={newMember} onChange={e=>setNewMember(e.target.value)} placeholder="Name..." className="flex-1 px-3 py-2 rounded border border-gray-300 focus:outline-none focus:border-teal" />
+                     <button onClick={() => { if(newMember.trim() && teamMembers.length<8) {addTeamMember(newMember.trim()); setNewMember('');} }} className="px-3 py-2 bg-teal text-white rounded hover:bg-teal-light font-bold">Add</button>
+                   </div>
+                 </div>
+               </div>
+            </div>
+
+            {expandedId && (
+              <div className="border-t-2 border-teal pt-2">
+                 <h3 className="text-lg font-bold text-gray-700 mb-2">{stats.find(m => m.id === expandedId)?.name}'s Grid</h3>
+                 <LevelDisplay xpData={xpData[expandedId]} name={stats.find(m => m.id === expandedId)?.name} />
+                 <DailyTracker 
+                    currentMonth={currentMonth} globalHabits={globalHabits} 
+                    data={allTeamData[expandedId] || {}} 
+                    toggleDay={(h, d) => toggleTeamDay(expandedId, h, d)}
+                    hideControls={true}
+                 />
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function OverviewDashboard({ currentMonth, data, globalHabits }) {
+        if (!window.Recharts) return <div className="p-8 text-center text-accentRed font-bold">Charts cannot be rendered because the Recharts library failed to load.</div>;
+        
+        const [yStr, mStr] = currentMonth.split('-');
+        const y = parseInt(yStr); const m = parseInt(mStr) - 1;
+        const days = getDaysInMonth(y, m);
+
+        const dailyData = useMemo(() => {
+          const res = [];
+          for (let d = 1; d <= days; d++) {
+            let com = 0; globalHabits.forEach(h => { if(data[h.id]?.[d]) com++; });
+            const max = globalHabits.length;
+            res.push({ day: `D${d}`, percent: max > 0 ? parseFloat(((com/max)*100).toFixed(1)) : 0 });
+          }
+          return res;
+        }, [data, globalHabits, days]);
+
+        const pieData = useMemo(() => {
+          let com=0; globalHabits.forEach(h => com += Object.values(data[h.id]||{}).filter(Boolean).length);
+          let total = globalHabits.reduce((acc, h) => acc + h.goal, 0);
+          return [ { name: 'Completed', value: com }, { name: 'Left', value: Math.max(0, total - com) } ];
+        }, [data, globalHabits]);
+
+        const PIE_COLORS = ['#2a7d7b', '#e8a09a'];
+
+        return (
+          <div className="space-y-6 mt-4">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow border border-gray-200">
+                <h3 className="text-lg font-bold text-gray-800 mb-4 border-b pb-2 flex items-center justify-between">
+                  Daily Trend <span className="text-xs bg-teal/10 text-teal px-2 py-1 rounded">{monthNames[m]} {y}</span>
+                </h3>
+                <div className="h-72 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={dailyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                      <defs><linearGradient id="colorPercent" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2a7d7b" stopOpacity={0.8}/><stop offset="95%" stopColor="#2a7d7b" stopOpacity={0}/></linearGradient></defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+                      <XAxis dataKey="day" tick={{fontSize: 12, fill: '#6b7280'}} tickLine={false} axisLine={false} tickMargin={10} minTickGap={20}/>
+                      <YAxis tick={{fontSize: 12, fill: '#6b7280'}} tickLine={false} axisLine={false} domain={[0, 100]} />
+                      <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} formatter={(val) => [`${val}%`, 'Completion']} />
+                      <Area type="monotone" dataKey="percent" stroke="#2a7d7b" strokeWidth={3} fillOpacity={1} fill="url(#colorPercent)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="bg-white p-6 rounded-xl shadow border border-gray-200 flex flex-col items-center">
+                <h3 className="text-lg font-bold text-gray-800 mb-2 w-full border-b pb-2 text-left">Hit / Miss Ratio</h3>
+                <div className="flex-1 w-full relative flex items-center justify-center min-h-[250px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value" stroke="none">
+                        {pieData.map((e, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip formatter={(val) => [val, 'Days']} contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}/>
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <span className="text-3xl font-black text-gray-800">{pieData[0].value+pieData[1].value>0?Math.round((pieData[0].value/(pieData[0].value+pieData[1].value))*100):0}%</span>
+                    <span className="text-xs text-gray-500 font-medium uppercase tracking-wider">Done</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function App() {
+        const { currentMonth, setCurrentMonth, globalHabits, monthlyData, toggleDay, updateHabitName, updateHabitGoal, addHabit, deleteHabit, teamMembers, teamMonthlyData, toggleTeamDay, addTeamMember, removeTeamMember, xpData } = useAppStore();
+        const [activeTab, setActiveTab] = useState('daily');
+
+        const [yStr, mStr] = currentMonth.split('-');
+        const currentMName = monthNames[parseInt(mStr) - 1];
+
+        const prevMonth = () => {
+          let newM = parseInt(mStr) - 1; let newY = parseInt(yStr);
+          if (newM < 1) { newM = 12; newY -= 1; }
+          setCurrentMonth(`${newY}-${String(newM).padStart(2, '0')}`);
+        };
+        const nextMonth = () => {
+          let newM = parseInt(mStr) + 1; let newY = parseInt(yStr);
+          if (newM > 12) { newM = 1; newY += 1; }
+          setCurrentMonth(`${newY}-${String(newM).padStart(2, '0')}`);
+        };
+
+        return (
+          <div className="min-h-screen flex flex-col bg-lightBg text-gray-800">
+            <header className="bg-white border-b border-gray-200 shadow-sm sticky top-0 z-50">
+              <div className="max-w-[1600px] mx-auto px-4 md:px-6 h-[72px] flex items-center justify-between">
+                <div className="flex flex-col md:flex-row items-start md:items-center gap-4">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-teal to-teal-light flex items-center justify-center shadow-md"><svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg></div>
+                    <h1 className="text-xl font-black tracking-tight text-gray-800">Habit<span className="text-teal">Flow</span><span className="bg-yellow-100 text-yellow-800 text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ml-1 tracking-widest align-top">Pro</span></h1>
+                  </div>
+
+                  <div className="flex bg-gray-100 p-1 rounded-lg">
+                    {['daily', 'overview', 'team'].map(tab => (
+                      <button key={tab} onClick={() => setActiveTab(tab)} className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all capitalize ${activeTab === tab ? 'bg-white text-teal shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                        {tab === 'daily' ? 'Daily Habits' : tab === 'overview' ? 'Overview' : 'Team Hub'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <LevelDisplay xpData={xpData['myself']} />
+                  <div className="flex items-center bg-gray-100 rounded-lg border border-gray-200 shadow-inner px-1">
+                    <button onClick={prevMonth} className="p-1.5 text-gray-500 hover:bg-white hover:text-gray-800 rounded transition"><ChevronLeftIcon /></button>
+                    <div className="font-bold text-gray-700 min-w-[140px] text-center">{currentMName} {yStr}</div>
+                    <button onClick={nextMonth} className="p-1.5 text-gray-500 hover:bg-white hover:text-gray-800 rounded transition"><ChevronRightIcon /></button>
+                  </div>
+                </div>
+              </div>
+            </header>
+
+            <main className="flex-1 w-full max-w-[1600px] mx-auto p-4 md:p-6 pb-20 overflow-x-hidden">
+              {activeTab === 'daily' && <DailyTracker currentMonth={currentMonth} globalHabits={globalHabits} data={monthlyData} toggleDay={toggleDay} updateHabitName={updateHabitName} updateHabitGoal={updateHabitGoal} addHabit={addHabit} deleteHabit={deleteHabit} />}
+              {activeTab === 'overview' && <OverviewDashboard currentMonth={currentMonth} globalHabits={globalHabits} data={monthlyData} />}
+              {activeTab === 'team' && <TeamDashboard currentMonth={currentMonth} globalHabits={globalHabits} teamMembers={teamMembers} allTeamData={teamMonthlyData} toggleTeamDay={toggleTeamDay} addTeamMember={addTeamMember} removeTeamMember={removeTeamMember} xpData={xpData} />}
+            </main>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+</body>
+</html>
